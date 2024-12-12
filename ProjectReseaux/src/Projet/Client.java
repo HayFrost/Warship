@@ -6,25 +6,32 @@ import java.io.*;
 import java.net.*;
 import java.util.Random;
 
-public class ClientGUI {
+public class Client {
     private static final int GRID_SIZE = 10;
     private static final int NUM_SHIPS = 3;
 
     private JFrame frame;
-    private JButton[][] buttons;
+    private JButton[][] clientButtons;
+    private JButton[][] serverButtons;
     private String[][] clientBoard;
+    private String[][] serverView;
     private Socket client;
     private PrintWriter out;
     private BufferedReader in;
     private int clientShipsRemaining = NUM_SHIPS;
+    private int serverShipsRemaining = NUM_SHIPS;
+    private boolean isClientTurn = true;
 
-    public ClientGUI() {
+    public Client() {
         initializeConnection();
         initializeGUI();
         clientBoard = initializeBoard();
+        serverView = initializeBoard();
         placeShips(clientBoard, NUM_SHIPS);
         System.out.println("Grille du client initialisée :");
         printBoard(clientBoard);
+
+        new Thread(this::receiveServerMoves).start();
     }
 
     private void initializeConnection() {
@@ -35,26 +42,37 @@ public class ClientGUI {
             System.out.println("Connexion au serveur réussie!");
         } catch (IOException e) {
             e.printStackTrace();
-            JOptionPane.showMessageDialog(null, "Impossible de se connecter au serveur.", "Erreur", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(null, "Impossible de se connecter au serveur ", "Erreur", JOptionPane.ERROR_MESSAGE);
             System.exit(1);
         }
     }
 
     private void initializeGUI() {
-        frame = new JFrame("Bataille Navale - Client");
+        frame = new JFrame("Bataille Navale (Client)");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(600, 650);
+        frame.setSize(800, 800);
 
-        buttons = new JButton[GRID_SIZE][GRID_SIZE];
-        JPanel gridPanel = new JPanel(new GridLayout(GRID_SIZE, GRID_SIZE));
+        clientButtons = new JButton[GRID_SIZE][GRID_SIZE];
+        serverButtons = new JButton[GRID_SIZE][GRID_SIZE];
+
+        JPanel clientGrid = new JPanel(new GridLayout(GRID_SIZE, GRID_SIZE));
+        JPanel serverGrid = new JPanel(new GridLayout(GRID_SIZE, GRID_SIZE));
 
         for (int i = 0; i < GRID_SIZE; i++) {
             for (int j = 0; j < GRID_SIZE; j++) {
-                JButton button = new JButton();
-                button.setBackground(Color.CYAN);
-                button.addActionListener(new ButtonClickListener(i, j));
-                buttons[i][j] = button;
-                gridPanel.add(button);
+                // Grille du client
+                JButton clientButton = new JButton();
+                clientButton.setBackground(Color.CYAN);
+                clientButton.setEnabled(false);
+                clientButtons[i][j] = clientButton;
+                clientGrid.add(clientButton);
+
+
+                JButton serverButton = new JButton();
+                serverButton.setBackground(Color.CYAN);
+                serverButton.addActionListener(new ServerButtonClickListener(i, j));
+                serverButtons[i][j] = serverButton;
+                serverGrid.add(serverButton);
             }
         }
 
@@ -64,63 +82,96 @@ public class ClientGUI {
             frame.dispose();
         });
 
-        frame.setLayout(new BorderLayout());
-        frame.add(gridPanel, BorderLayout.CENTER);
-        frame.add(quitButton, BorderLayout.SOUTH);
+        JPanel mainPanel = new JPanel(new BorderLayout());
+        JPanel gridsPanel = new JPanel(new GridLayout(1, 2, 10, 10));
+        gridsPanel.add(clientGrid);
+        gridsPanel.add(serverGrid);
+
+        mainPanel.add(new JLabel("Grille coté Client (à gauche) et Grille coté Serveur (à droite)", SwingConstants.CENTER), BorderLayout.NORTH);
+        mainPanel.add(gridsPanel, BorderLayout.CENTER);
+        mainPanel.add(quitButton, BorderLayout.SOUTH);
+
+        frame.add(mainPanel);
         frame.setVisible(true);
     }
 
-    private class ButtonClickListener implements ActionListener {
+    private class ServerButtonClickListener implements ActionListener {
         private int x, y;
 
-        public ButtonClickListener(int x, int y) {
+        public ServerButtonClickListener(int x, int y) {
             this.x = x;
             this.y = y;
         }
 
         @Override
         public void actionPerformed(ActionEvent e) {
+            if (!isClientTurn) {
+                JOptionPane.showMessageDialog(frame, "C'est pas a toi de jouer !");
+                return;
+            }
+
             String move = x + "," + y;
             out.println(move);
 
             try {
-                // Lecture de la réponse du serveur
                 String response = in.readLine();
                 System.out.println("Réponse du serveur : " + response);
 
-                if (response.contains("Touché")) {
-                    buttons[x][y].setBackground(Color.RED);
-                } else if (response.contains("Manqué")) {
-                    buttons[x][y].setBackground(Color.WHITE);
+                if (response.contains("BAM !!!")) {
+                    serverButtons[x][y].setBackground(Color.RED);
+                    serverView[x][y] = "X";
+                    serverShipsRemaining--;
+                } else if (response.contains("Hé non !")) {
+                    serverButtons[x][y].setBackground(Color.WHITE);
+                    serverView[x][y] = "O";
                 }
 
-                // Vérification de la fin de partie
-                if (response.contains("Gagné!") || response.contains("Perdu!")) {
-                    JOptionPane.showMessageDialog(frame, response);
+                if (response.contains("Gagné!")) {
+                    JOptionPane.showMessageDialog(frame, "Félicitations, la victoire navale est votre !!!");
                     closeConnection();
-                    frame.dispose(); // Fermeture de la fenêtre après le message
-                    return; // Sortie immédiate
+                    frame.dispose();
                 }
 
-                // Tour du serveur
-                String serverMove = in.readLine();
-                System.out.println("Coup du serveur : " + serverMove);
-                String serverResponse = processMove(clientBoard, serverMove);
-                out.println(serverResponse);
-
-                if (serverResponse.contains("Touché")) {
-                    clientShipsRemaining--;
-                    if (clientShipsRemaining <= 0) {
-                        JOptionPane.showMessageDialog(frame, "Tous vos bateaux ont été coulés! Vous avez perdu.");
-                        closeConnection();
-                        frame.dispose(); // Fermeture de la fenêtre après le message
-                    }
-                }
+                updateServerGrid();
+                isClientTurn = false;
             } catch (IOException ex) {
                 ex.printStackTrace();
             }
         }
     }
+
+    private void receiveServerMoves() {
+        try {
+            while (true) {
+                String serverMove = in.readLine();
+                if (serverMove == null) {
+                    System.out.println("Le serveur a interrompu la connexion.");
+                    break;
+                }
+
+                System.out.println("Coup du serveur : " + serverMove);
+
+                String response = processMove(clientBoard, serverMove);
+                out.println(response);
+
+                if (response.contains("BAM !!!")) {
+                    clientShipsRemaining--;
+                    if (clientShipsRemaining <= 0) {
+                        JOptionPane.showMessageDialog(frame, "Ah nan la loose !!!");
+                        break;
+                    }
+                }
+
+                updateClientGrid();
+                isClientTurn = true;
+            }
+        } catch (IOException e) {
+            System.out.println("Connexion au serveur interrompue : " + e.getMessage());
+        } finally {
+            closeConnection();
+        }
+    }
+
 
     private String[][] initializeBoard() {
         String[][] board = new String[GRID_SIZE][GRID_SIZE];
@@ -152,16 +203,49 @@ public class ClientGUI {
             int y = Integer.parseInt(parts[1]);
 
             if (board[x][y].equals("B")) {
-                board[x][y] = "X"; // Marquer le bateau touché
-                return "Touché!";
+                board[x][y] = "X";
+                return "BAM !!!";
             } else if (board[x][y].equals(".")) {
-                board[x][y] = "O"; // Marquer un tir manqué
-                return "Manqué!";
+                board[x][y] = "O";
+                return "Hé non !";
             } else {
-                return "Déjà tiré ici!";
+                return "Tu as deja tiré ici";
             }
         } catch (Exception e) {
-            return "Mouvement invalide!";
+            return "ATTENTION JE TIRE !!!";
+        }
+    }
+
+    private void updateClientGrid() {
+        for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
+                if (clientBoard[i][j].equals("X")) {
+                    clientButtons[i][j].setBackground(Color.RED);
+                } else if (clientBoard[i][j].equals("O")) {
+                    clientButtons[i][j].setBackground(Color.WHITE);
+                }
+            }
+        }
+    }
+
+    private void updateServerGrid() {
+        for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
+                if (serverView[i][j].equals("X")) {
+                    serverButtons[i][j].setBackground(Color.RED);
+                } else if (serverView[i][j].equals("O")) {
+                    serverButtons[i][j].setBackground(Color.WHITE);
+                }
+            }
+        }
+    }
+
+    private void printBoard(String[][] board) {
+        for (String[] row : board) {
+            for (String cell : row) {
+                System.out.print(cell + " ");
+            }
+            System.out.println();
         }
     }
 
@@ -175,16 +259,7 @@ public class ClientGUI {
         }
     }
 
-    private void printBoard(String[][] board) {
-        for (String[] row : board) {
-            for (String cell : row) {
-                System.out.print(cell + " ");
-            }
-            System.out.println();
-        }
-    }
-
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(ClientGUI::new);
+        SwingUtilities.invokeLater(Client::new);
     }
 }
